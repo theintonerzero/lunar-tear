@@ -1,5 +1,11 @@
 package questflow
 
+// MainQuest scene-field families mirror three client entity tables:
+//
+//	MainFlow*    — EntityIUserMainQuestMainFlowStatus (#11443)
+//	Progress*    — EntityIUserMainQuestProgressStatus (#11444)
+//	ReplayFlow*  — EntityIUserMainQuestReplayFlowStatus (#11445)
+
 import (
 	"fmt"
 	"log"
@@ -45,10 +51,8 @@ func (h *QuestHandler) advanceMainFlowScene(user *store.UserState, questId, scen
 	}
 }
 
-// RecordSeasonRoute upserts the (season, route) pair into the player's history,
-// bumping LatestVersion on first insert. The history backs IUserMainQuestSeasonRoute,
-// which the client uses to know which chapters' scene metadata to load (so cage
-// menu-replay can transition to quests from older chapters without crashing).
+// Backs IUserMainQuestSeasonRoute: the client needs the history to load
+// scene metadata when cage menu-replay jumps to older chapters.
 func RecordSeasonRoute(user *store.UserState, seasonId, routeId int32, nowMillis int64) {
 	if seasonId <= 0 || routeId <= 0 {
 		return
@@ -133,11 +137,48 @@ func (h *QuestHandler) getChapterLastSceneId(questId int32) int32 {
 
 func (h *QuestHandler) HandleReplayFlowSceneProgress(user *store.UserState, questSceneId int32, nowMillis int64) {
 	user.MainQuest.ReplayFlowCurrentQuestSceneId = questSceneId
-	if user.MainQuest.ReplayFlowHeadQuestSceneId == 0 || h.isSceneAhead(questSceneId, user.MainQuest.ReplayFlowHeadQuestSceneId) {
-		user.MainQuest.ReplayFlowHeadQuestSceneId = questSceneId
-	}
+	user.MainQuest.ReplayFlowHeadQuestSceneId = questSceneId
+
+	user.PortalCageStatus.IsCurrentProgress = false
+	user.PortalCageStatus.LatestVersion = nowMillis
+
+	flowType := h.replayFlowType(user, questSceneId)
+	user.MainQuest.CurrentQuestFlowType = int32(flowType)
 	user.MainQuest.LatestVersion = nowMillis
-	log.Printf("[HandleReplayFlowSceneProgress] sceneId=%d replayHead=%d", questSceneId, user.MainQuest.ReplayFlowHeadQuestSceneId)
+	log.Printf("[HandleReplayFlowSceneProgress] sceneId=%d flowType=%s", questSceneId, flowType)
+}
+
+func (h *QuestHandler) replayFlowType(user *store.UserState, questSceneId int32) model.QuestFlowType {
+	scene, ok := h.SceneById[questSceneId]
+	if !ok {
+		return model.QuestFlowTypeReplayFlow
+	}
+	routeId, ok := h.RouteIdByQuestId[scene.QuestId]
+	if !ok {
+		return model.QuestFlowTypeReplayFlow
+	}
+	return h.replayFlowTypeForRoute(user, routeId)
+}
+
+func (h *QuestHandler) replayFlowTypeForRoute(user *store.UserState, routeId int32) model.QuestFlowType {
+	seasonId, ok := h.SeasonIdByRouteId[routeId]
+	if !ok {
+		return model.QuestFlowTypeReplayFlow
+	}
+	for key, entry := range user.MainQuestSeasonRoutes {
+		if key.MainQuestSeasonId == seasonId && entry.MainQuestRouteId != routeId {
+			return model.QuestFlowTypeAnotherRouteReplayFlow
+		}
+	}
+	return model.QuestFlowTypeReplayFlow
+}
+
+func (h *QuestHandler) replayFlowTypeFromQuestId(user *store.UserState, questId int32) model.QuestFlowType {
+	routeId, ok := h.RouteIdByQuestId[questId]
+	if !ok {
+		return model.QuestFlowTypeReplayFlow
+	}
+	return h.replayFlowTypeForRoute(user, routeId)
 }
 
 func (h *QuestHandler) HandleMainQuestSceneProgress(user *store.UserState, questSceneId int32) {
@@ -153,22 +194,27 @@ func (h *QuestHandler) HandleMainQuestSceneProgress(user *store.UserState, quest
 
 	if prevSceneId := user.MainQuest.ProgressQuestSceneId; prevSceneId != 0 {
 		if prevScene, ok := h.SceneById[prevSceneId]; ok && prevScene.QuestId != quest.QuestId {
-			h.finalizeChainPreviousQuest(user, prevScene.QuestId, gametime.NowMillis())
+			// Skip if the previous quest is playable — it has its own FinishMainQuest;
+			// chain-finalizing here would double-increment ClearCount.
+			if prevQuest, ok := h.QuestById[prevScene.QuestId]; ok && !isMainQuestPlayable(prevQuest) {
+				h.finalizeChainPreviousQuest(user, prevScene.QuestId, gametime.NowMillis())
+			}
 		}
 	}
 
-	if isMainQuestPlayable(quest) {
-		if model.QuestResultType(scene.QuestResultType) == model.QuestResultTypeHalfResult {
-			nowMillis := gametime.NowMillis()
-			h.clearQuestMissions(user, quest.QuestId, nowMillis)
-		}
+	isReplay := model.IsReplayQuestFlowType(user.MainQuest.CurrentQuestFlowType)
 
+	if isMainQuestPlayable(quest) {
 		user.MainQuest.ProgressQuestSceneId = questSceneId
 		if h.isSceneAhead(questSceneId, user.MainQuest.ProgressHeadQuestSceneId) {
 			user.MainQuest.ProgressHeadQuestSceneId = questSceneId
 		}
-		user.MainQuest.CurrentQuestFlowType = int32(model.QuestFlowTypeSubFlow)
-		user.MainQuest.ProgressQuestFlowType = int32(model.QuestFlowTypeSubFlow)
+		if isReplay {
+			user.MainQuest.ProgressQuestFlowType = user.MainQuest.CurrentQuestFlowType
+		} else {
+			user.MainQuest.CurrentQuestFlowType = int32(model.QuestFlowTypeSubFlow)
+			user.MainQuest.ProgressQuestFlowType = int32(model.QuestFlowTypeSubFlow)
+		}
 	} else {
 		user.MainQuest.CurrentQuestSceneId = questSceneId
 		if h.isSceneAhead(questSceneId, user.MainQuest.HeadQuestSceneId) {
@@ -176,5 +222,13 @@ func (h *QuestHandler) HandleMainQuestSceneProgress(user *store.UserState, quest
 		}
 		lastSceneId := h.getChapterLastSceneId(quest.QuestId)
 		user.MainQuest.IsReachedLastQuestScene = questSceneId == lastSceneId
+	}
+
+	if isReplay {
+		user.MainQuest.ReplayFlowCurrentQuestSceneId = questSceneId
+		if h.isSceneAhead(questSceneId, user.MainQuest.ReplayFlowHeadQuestSceneId) {
+			user.MainQuest.ReplayFlowHeadQuestSceneId = questSceneId
+		}
+		user.MainQuest.LatestVersion = gametime.NowMillis()
 	}
 }

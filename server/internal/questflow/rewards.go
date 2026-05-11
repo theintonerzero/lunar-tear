@@ -51,7 +51,9 @@ func (h *QuestHandler) evaluateFinishOutcome(user *store.UserState, questId int3
 		panic(fmt.Sprintf("unknown questId=%d for evaluateFinishOutcome", questId))
 	}
 
-	if !questState.IsRewardGranted {
+	isReplay := model.IsReplayQuestFlowType(user.MainQuest.CurrentQuestFlowType)
+
+	if !questState.IsRewardGranted && !isReplay {
 		rewardGroupId := h.firstClearRewardGroupId(user, questDef)
 		for _, reward := range h.FirstClearRewardsByGroupId[rewardGroupId] {
 			outcome.FirstClearRewards = append(outcome.FirstClearRewards, RewardGrant{
@@ -62,7 +64,7 @@ func (h *QuestHandler) evaluateFinishOutcome(user *store.UserState, questId int3
 		}
 	}
 
-	if user.MainQuest.CurrentQuestFlowType == int32(model.QuestFlowTypeReplayFlow) && questDef.QuestReplayFlowRewardGroupId > 0 {
+	if isReplay && questDef.QuestReplayFlowRewardGroupId > 0 {
 		for _, reward := range h.ReplayFlowRewardsByGroupId[questDef.QuestReplayFlowRewardGroupId] {
 			outcome.ReplayFlowFirstClearRewards = append(outcome.ReplayFlowFirstClearRewards, RewardGrant{
 				PossessionType: model.PossessionType(reward.PossessionType),
@@ -72,48 +74,53 @@ func (h *QuestHandler) evaluateFinishOutcome(user *store.UserState, questId int3
 		}
 	}
 
-	pendingClearCount := 0
-	regularMissionCount := 0
-	for _, questMissionId := range h.MissionIdsByQuestId[questId] {
-		missionDef, ok := h.MissionById[questMissionId]
-		if !ok || model.QuestMissionConditionType(missionDef.QuestMissionConditionType) == model.QuestMissionConditionTypeComplete {
-			continue
-		}
-		regularMissionCount++
-
-		key := store.QuestMissionKey{QuestId: questId, QuestMissionId: questMissionId}
-		mission := user.QuestMissions[key]
-
-		if !mission.IsClear {
-			pendingClearCount++
-			outcome.MissionClearRewards = appendMissionRewards(
-				outcome.MissionClearRewards,
-				h.MissionRewardsByMissionId[missionDef.QuestMissionRewardId],
-			)
-		}
-	}
-
-	priorClearCount := regularMissionCount - pendingClearCount
-	// On our server every mission auto-clears, so priorClearCount + pendingClearCount
-	// always equals regularMissionCount. The two-variable form is kept to mirror the
-	// original game's intent where individual missions could fail their conditions.
-	allRegularWillClear := regularMissionCount > 0 && (priorClearCount+pendingClearCount) == regularMissionCount
-	if allRegularWillClear {
+	// Mission rewards / BigWin are first-clear concepts. Reference
+	// IUserQuestMissionTable has no rows for replay-variant ids (30000+):
+	// the popup is empty on replay in the original game.
+	if !isReplay {
+		pendingClearCount := 0
+		regularMissionCount := 0
 		for _, questMissionId := range h.MissionIdsByQuestId[questId] {
 			missionDef, ok := h.MissionById[questMissionId]
-			if !ok || model.QuestMissionConditionType(missionDef.QuestMissionConditionType) != model.QuestMissionConditionTypeComplete {
+			if !ok || model.QuestMissionConditionType(missionDef.QuestMissionConditionType) == model.QuestMissionConditionTypeComplete {
 				continue
 			}
+			regularMissionCount++
+
 			key := store.QuestMissionKey{QuestId: questId, QuestMissionId: questMissionId}
-			if !user.QuestMissions[key].IsClear {
-				outcome.MissionClearCompleteRewards = appendMissionRewards(
-					outcome.MissionClearCompleteRewards,
+			mission := user.QuestMissions[key]
+
+			if !mission.IsClear {
+				pendingClearCount++
+				outcome.MissionClearRewards = appendMissionRewards(
+					outcome.MissionClearRewards,
 					h.MissionRewardsByMissionId[missionDef.QuestMissionRewardId],
 				)
-				outcome.BigWinClearedQuestMissionIds = append(outcome.BigWinClearedQuestMissionIds, questMissionId)
 			}
 		}
-		outcome.IsBigWin = len(outcome.BigWinClearedQuestMissionIds) > 0
+
+		priorClearCount := regularMissionCount - pendingClearCount
+		// On our server every mission auto-clears, so priorClearCount + pendingClearCount
+		// always equals regularMissionCount. The two-variable form is kept to mirror the
+		// original game's intent where individual missions could fail their conditions.
+		allRegularWillClear := regularMissionCount > 0 && (priorClearCount+pendingClearCount) == regularMissionCount
+		if allRegularWillClear {
+			for _, questMissionId := range h.MissionIdsByQuestId[questId] {
+				missionDef, ok := h.MissionById[questMissionId]
+				if !ok || model.QuestMissionConditionType(missionDef.QuestMissionConditionType) != model.QuestMissionConditionTypeComplete {
+					continue
+				}
+				key := store.QuestMissionKey{QuestId: questId, QuestMissionId: questMissionId}
+				if !user.QuestMissions[key].IsClear {
+					outcome.MissionClearCompleteRewards = appendMissionRewards(
+						outcome.MissionClearCompleteRewards,
+						h.MissionRewardsByMissionId[missionDef.QuestMissionRewardId],
+					)
+					outcome.BigWinClearedQuestMissionIds = append(outcome.BigWinClearedQuestMissionIds, questMissionId)
+				}
+			}
+			outcome.IsBigWin = len(outcome.BigWinClearedQuestMissionIds) > 0
+		}
 	}
 
 	outcome.DropRewards = h.computeDropRewards(questDef)
@@ -240,7 +247,7 @@ func (h *QuestHandler) resolveDeckUnits(user *store.UserState, questId int32) (c
 	return costumeUuids, characterIds
 }
 
-func (h *QuestHandler) applyQuestRewards(user *store.UserState, questId int32, nowMillis int64) {
+func (h *QuestHandler) applyExpAndGoldRewards(user *store.UserState, questId int32, nowMillis int64) {
 	questDef, ok := h.QuestById[questId]
 	if !ok {
 		return
@@ -252,11 +259,22 @@ func (h *QuestHandler) applyQuestRewards(user *store.UserState, questId int32, n
 		user.ConsumableItems[h.Config.ConsumableItemIdForGold] += questDef.Gold
 		log.Printf("[applyQuestRewards] questId=%d gold: +%d -> total=%d", questId, questDef.Gold, user.ConsumableItems[h.Config.ConsumableItemIdForGold])
 	}
+}
 
+func (h *QuestHandler) applyFirstClearItemRewards(user *store.UserState, questId int32, nowMillis int64) {
+	questDef, ok := h.QuestById[questId]
+	if !ok {
+		return
+	}
 	rewardGroupId := h.firstClearRewardGroupId(user, questDef)
 	for _, reward := range h.FirstClearRewardsByGroupId[rewardGroupId] {
 		h.applyRewardPossession(user, model.PossessionType(reward.PossessionType), reward.PossessionId, reward.Count, nowMillis)
 	}
+}
+
+func (h *QuestHandler) applyQuestRewards(user *store.UserState, questId int32, nowMillis int64) {
+	h.applyExpAndGoldRewards(user, questId, nowMillis)
+	h.applyFirstClearItemRewards(user, questId, nowMillis)
 }
 
 func (h *QuestHandler) applyRewardPossession(user *store.UserState, possType model.PossessionType, possId, count int32, nowMillis int64) {

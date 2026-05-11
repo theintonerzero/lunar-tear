@@ -12,6 +12,15 @@ const (
 	QuestFlowTypeAnotherRouteReplayFlow QuestFlowType = 4
 )
 
+// IsReplayQuestFlowType reports whether the flow type indicates an active
+// replay session — either same-route REPLAY_FLOW or cross-route
+// ANOTHER_ROUTE_REPLAY_FLOW. Mirrors the client's Story.IsReplayQuestFlowType
+// predicate (dump.cs:768202).
+func IsReplayQuestFlowType(t int32) bool {
+	return t == int32(QuestFlowTypeReplayFlow) ||
+		t == int32(QuestFlowTypeAnotherRouteReplayFlow)
+}
+
 func (t QuestFlowType) String() string {
 	switch t {
 	case QuestFlowTypeUnknown:

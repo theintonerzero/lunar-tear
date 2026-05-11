@@ -153,6 +153,9 @@ func init() {
 		return s
 	})
 	register("IUserMainQuestReplayFlowStatus", func(user store.UserState) string {
+		if user.MainQuest.ReplayFlowCurrentQuestSceneId == 0 && user.MainQuest.ReplayFlowHeadQuestSceneId == 0 {
+			return "[]"
+		}
 		s, _ := utils.EncodeJSONMaps(map[string]any{
 			"userId":                  user.UserId,
 			"currentHeadQuestSceneId": user.MainQuest.ReplayFlowHeadQuestSceneId,

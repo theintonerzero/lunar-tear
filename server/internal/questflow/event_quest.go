@@ -44,7 +44,7 @@ func (h *QuestHandler) HandleEventQuestFinish(user *store.UserState, eventQuestC
 
 	outcome := h.evaluateFinishOutcome(user, questId)
 	if !isRetired {
-		h.applyQuestVictory(user, questId, &outcome, nowMillis)
+		h.applyQuestVictory(user, questId, &outcome, nowMillis, false)
 	}
 
 	if isRetired && !isAnnihilated && quest.Stamina > 1 {
@@ -72,8 +72,7 @@ func (h *QuestHandler) HandleEventQuestRestart(user *store.UserState, eventQuest
 }
 
 func (h *QuestHandler) HandleEventQuestSceneProgress(user *store.UserState, questSceneId int32, nowMillis int64) {
-	scene, ok := h.SceneById[questSceneId]
-	if !ok {
+	if _, ok := h.SceneById[questSceneId]; !ok {
 		log.Printf("[HandleEventQuestSceneProgress] unknown sceneId=%d, skipping", questSceneId)
 		return
 	}
@@ -84,8 +83,4 @@ func (h *QuestHandler) HandleEventQuestSceneProgress(user *store.UserState, ques
 	}
 
 	h.applySceneGrants(user, questSceneId, nowMillis)
-
-	if model.QuestResultType(scene.QuestResultType) == model.QuestResultTypeHalfResult {
-		h.clearQuestMissions(user, scene.QuestId, nowMillis)
-	}
 }

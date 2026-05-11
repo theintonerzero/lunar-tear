@@ -15,8 +15,7 @@ func boolToInt(b bool) int {
 	return 0
 }
 
-// writeUserState inserts all child table rows for a newly created user.
-// The users row must already exist.
+// Precondition: the users row must already exist.
 func writeUserState(tx *sql.Tx, uid int64, u *store.UserState) error {
 	exec := func(query string, args ...any) error {
 		_, err := tx.Exec(query, args...)
@@ -123,7 +122,6 @@ func writeUserState(tx *sql.Tx, uid int64, u *store.UserState) error {
 		return err
 	}
 
-	// Map tables
 	for _, v := range u.Characters {
 		if err := exec(`INSERT INTO user_characters (user_id, character_id, level, exp, latest_version) VALUES (?,?,?,?,?)`,
 			uid, v.CharacterId, v.Level, v.Exp, v.LatestVersion); err != nil {
@@ -507,18 +505,13 @@ func writeUserState(tx *sql.Tx, uid int64, u *store.UserState) error {
 	return nil
 }
 
-// diffAndSave compares before/after UserState and writes only changed rows.
-// For 1:1 tables, it UPDATEs if any field changed.
-// For map tables, it uses INSERT OR REPLACE for added/modified entries and DELETE for removed ones.
-// For slice-based data (gifts, medals, deck sub-weapons/parts, weapon skills/abilities),
-// it does DELETE-all then INSERT-all for simplicity.
+// 1:1 tables update on field-change; maps INSERT OR REPLACE + DELETE; slice tables DELETE-all then INSERT-all.
 func diffAndSave(tx *sql.Tx, uid int64, before, after *store.UserState) error {
 	exec := func(query string, args ...any) error {
 		_, err := tx.Exec(query, args...)
 		return err
 	}
 
-	// users table
 	if before.PlayerId != after.PlayerId || before.OsType != after.OsType || before.PlatformType != after.PlatformType ||
 		before.UserRestrictionType != after.UserRestrictionType || before.RegisterDatetime != after.RegisterDatetime ||
 		before.GameStartDatetime != after.GameStartDatetime || before.LatestVersion != after.LatestVersion ||
@@ -653,7 +646,6 @@ func diffAndSave(tx *sql.Tx, uid int64, before, after *store.UserState) error {
 		}
 	}
 
-	// Gacha scalar
 	if before.Gacha.RewardAvailable != after.Gacha.RewardAvailable || before.Gacha.TodaysCurrentDrawCount != after.Gacha.TodaysCurrentDrawCount ||
 		before.Gacha.DailyMaxCount != after.Gacha.DailyMaxCount || before.Gacha.LastRewardDrawDate != after.Gacha.LastRewardDrawDate {
 		var obtainItemId, obtainCount sql.NullInt64
@@ -668,7 +660,6 @@ func diffAndSave(tx *sql.Tx, uid int64, before, after *store.UserState) error {
 		}
 	}
 
-	// Map tables — use generic diff helpers
 	diffMapInt32(tx, uid, before.Characters, after.Characters, "user_characters", "character_id",
 		func(v store.CharacterState) []any { return []any{v.CharacterId, v.Level, v.Exp, v.LatestVersion} },
 		"character_id, level, exp, latest_version")
@@ -693,7 +684,6 @@ func diffAndSave(tx *sql.Tx, uid int64, before, after *store.UserState) error {
 			return []any{v.UserDeckCharacterUuid, v.UserCostumeUuid, v.MainUserWeaponUuid, v.UserCompanionUuid, v.Power, v.UserThoughtUuid, v.DressupCostumeId, v.LatestVersion}
 		}, "user_deck_character_uuid, user_costume_uuid, main_user_weapon_uuid, user_companion_uuid, power, user_thought_uuid, dressup_costume_id, latest_version")
 
-	// Decks (composite key)
 	for k, v := range after.Decks {
 		if old, ok := before.Decks[k]; !ok || old != v {
 			exec(fmt.Sprintf(`INSERT OR REPLACE INTO user_decks (user_id, deck_type, user_deck_number, user_deck_character_uuid01, user_deck_character_uuid02, user_deck_character_uuid03, name, power, latest_version) VALUES (?,?,?,?,?,?,?,?,?)`),
@@ -706,7 +696,6 @@ func diffAndSave(tx *sql.Tx, uid int64, before, after *store.UserState) error {
 		}
 	}
 
-	// Slice-based tables: delete all + reinsert
 	replaceSliceTable(tx, uid, "user_deck_sub_weapons", after.DeckSubWeapons, func(key string, uuids []string) {
 		for i, uuid := range uuids {
 			exec(`INSERT INTO user_deck_sub_weapons (user_id, user_deck_character_uuid, ordinal, user_weapon_uuid) VALUES (?,?,?,?)`, uid, key, i, uuid)
@@ -723,7 +712,6 @@ func diffAndSave(tx *sql.Tx, uid int64, before, after *store.UserState) error {
 			return []any{v.QuestId, int32(v.QuestStateType), boolToInt(v.IsBattleOnly), v.UserDeckNumber, v.LatestStartDatetime, v.ClearCount, v.DailyClearCount, v.LastClearDatetime, v.ShortestClearFrames, boolToInt(v.IsRewardGranted), v.LatestVersion}
 		}, "quest_id, quest_state_type, is_battle_only, user_deck_number, latest_start_datetime, clear_count, daily_clear_count, last_clear_datetime, shortest_clear_frames, is_reward_granted, latest_version")
 
-	// Quest missions (composite key)
 	for k, v := range after.QuestMissions {
 		if old, ok := before.QuestMissions[k]; !ok || old != v {
 			exec(`INSERT OR REPLACE INTO user_quest_missions (user_id, quest_id, quest_mission_id, progress_value, is_clear, latest_clear_datetime, latest_version) VALUES (?,?,?,?,?,?,?)`,
@@ -776,7 +764,6 @@ func diffAndSave(tx *sql.Tx, uid int64, before, after *store.UserState) error {
 			return []any{v.WeaponId, v.MaxLevel, v.MaxLimitBreakCount, v.FirstAcquisitionDatetime, v.LatestVersion}
 		}, "weapon_id, max_level, max_limit_break_count, first_acquisition_datetime, latest_version")
 
-	// Weapon skills/abilities: slice-based, delete+reinsert
 	exec(`DELETE FROM user_weapon_skills WHERE user_id=?`, uid)
 	for _, skills := range after.WeaponSkills {
 		for _, v := range skills {
@@ -798,7 +785,6 @@ func diffAndSave(tx *sql.Tx, uid int64, before, after *store.UserState) error {
 			return []any{v.UserCostumeUuid, v.Level, v.AcquisitionDatetime, v.LatestVersion}
 		}, "user_costume_uuid, level, acquisition_datetime, latest_version")
 
-	// Costume awaken status ups (composite key)
 	for k, v := range after.CostumeAwakenStatusUps {
 		if old, ok := before.CostumeAwakenStatusUps[k]; !ok || old != v {
 			exec(`INSERT OR REPLACE INTO user_costume_awaken_status_ups (user_id, user_costume_uuid, status_calculation_type, hp, attack, vitality, agility, critical_ratio, critical_attack, latest_version) VALUES (?,?,?,?,?,?,?,?,?,?)`,
@@ -854,7 +840,6 @@ func diffAndSave(tx *sql.Tx, uid int64, before, after *store.UserState) error {
 		}
 	}
 
-	// Deck type notes (key is model.DeckType which is int32-based)
 	for k, v := range after.DeckTypeNotes {
 		if old, ok := before.DeckTypeNotes[k]; !ok || old != v {
 			exec(`INSERT OR REPLACE INTO user_deck_type_notes (user_id, deck_type, max_deck_power, latest_version) VALUES (?,?,?,?)`,
@@ -888,7 +873,6 @@ func diffAndSave(tx *sql.Tx, uid int64, before, after *store.UserState) error {
 	diffTimestampMap(tx, uid, before.DrawnOmikuji, after.DrawnOmikuji, "user_drawn_omikuji", "omikuji_id")
 	diffBoolMap(tx, uid, before.DokanConfirmed, after.DokanConfirmed, "user_dokan_confirmed", "dokan_id")
 
-	// Gifts: delete all + reinsert
 	exec(`DELETE FROM user_gifts WHERE user_id=?`, uid)
 	for _, g := range after.Gifts.NotReceived {
 		var expDt sql.NullInt64
@@ -904,19 +888,16 @@ func diffAndSave(tx *sql.Tx, uid int64, before, after *store.UserState) error {
 			uid, uuid, g.GiftCommon.PossessionType, g.GiftCommon.PossessionId, g.GiftCommon.Count, g.GiftCommon.GrantDatetime, g.GiftCommon.DescriptionGiftTextId, g.GiftCommon.EquipmentData, g.ReceivedDatetime)
 	}
 
-	// Gacha converted medals: delete+reinsert
 	exec(`DELETE FROM user_gacha_converted_medals WHERE user_id=?`, uid)
 	for i, v := range after.Gacha.ConvertedGachaMedal.ConvertedMedalPossession {
 		exec(`INSERT INTO user_gacha_converted_medals (user_id, ordinal, consumable_item_id, count) VALUES (?,?,?,?)`, uid, i, v.ConsumableItemId, v.Count)
 	}
 
-	// Gacha banners
 	for id, v := range after.Gacha.BannerStates {
 		if old, ok := before.Gacha.BannerStates[id]; !ok || old.MedalCount != v.MedalCount || old.StepNumber != v.StepNumber || old.LoopCount != v.LoopCount || old.DrawCount != v.DrawCount || old.BoxNumber != v.BoxNumber {
 			exec(`INSERT OR REPLACE INTO user_gacha_banners (user_id, gacha_id, medal_count, step_number, loop_count, draw_count, box_number) VALUES (?,?,?,?,?,?,?)`,
 				uid, v.GachaId, v.MedalCount, v.StepNumber, v.LoopCount, v.DrawCount, v.BoxNumber)
 		}
-		// Box drew counts: always delete+reinsert for this gacha
 		exec(`DELETE FROM user_gacha_banner_box_drew_counts WHERE user_id=? AND gacha_id=?`, uid, id)
 		for itemId, count := range v.BoxDrewCounts {
 			exec(`INSERT INTO user_gacha_banner_box_drew_counts (user_id, gacha_id, box_item_id, count) VALUES (?,?,?,?)`, uid, id, itemId, count)
@@ -934,7 +915,6 @@ func diffAndSave(tx *sql.Tx, uid int64, before, after *store.UserState) error {
 			return []any{v.CharacterBoardId, v.PanelReleaseBit1, v.PanelReleaseBit2, v.PanelReleaseBit3, v.PanelReleaseBit4, v.LatestVersion}
 		}, "character_board_id, panel_release_bit1, panel_release_bit2, panel_release_bit3, panel_release_bit4, latest_version")
 
-	// Character board abilities (composite key)
 	for k, v := range after.CharacterBoardAbilities {
 		if old, ok := before.CharacterBoardAbilities[k]; !ok || old != v {
 			exec(`INSERT OR REPLACE INTO user_character_board_abilities (user_id, character_id, ability_id, level, latest_version) VALUES (?,?,?,?,?)`,
@@ -947,7 +927,6 @@ func diffAndSave(tx *sql.Tx, uid int64, before, after *store.UserState) error {
 		}
 	}
 
-	// Character board status ups (composite key)
 	for k, v := range after.CharacterBoardStatusUps {
 		if old, ok := before.CharacterBoardStatusUps[k]; !ok || old != v {
 			exec(`INSERT OR REPLACE INTO user_character_board_status_ups (user_id, character_id, status_calculation_type, hp, attack, vitality, agility, critical_ratio, critical_attack, latest_version) VALUES (?,?,?,?,?,?,?,?,?,?)`,
@@ -980,7 +959,6 @@ func diffAndSave(tx *sql.Tx, uid int64, before, after *store.UserState) error {
 		},
 		"slot_number, shop_item_id, latest_version")
 
-	// Gimmick tables (composite keys)
 	for k, v := range after.Gimmick.Progress {
 		if old, ok := before.Gimmick.Progress[k]; !ok || old != v {
 			exec(`INSERT OR REPLACE INTO user_gimmick_progress (user_id, gimmick_sequence_schedule_id, gimmick_sequence_id, gimmick_id, is_gimmick_cleared, start_datetime, latest_version) VALUES (?,?,?,?,?,?,?)`,
@@ -1030,7 +1008,6 @@ func diffAndSave(tx *sql.Tx, uid int64, before, after *store.UserState) error {
 		}
 	}
 
-	// Big hunt maps
 	diffMapInt32(tx, uid, before.BigHuntMaxScores, after.BigHuntMaxScores, "user_big_hunt_max_scores", "big_hunt_boss_id",
 		func(v store.BigHuntMaxScore) []any {
 			return []any{0, v.MaxScore, v.MaxScoreUpdateDatetime, v.LatestVersion}
@@ -1079,7 +1056,6 @@ func diffAndSave(tx *sql.Tx, uid int64, before, after *store.UserState) error {
 	return nil
 }
 
-// Generic diff helpers for map tables with int32 keys
 func diffMapInt32[V comparable](tx *sql.Tx, uid int64, before, after map[int32]V, table, keyCol string, vals func(V) []any, cols string) {
 	for k, v := range after {
 		if old, ok := before[k]; !ok || old != v {

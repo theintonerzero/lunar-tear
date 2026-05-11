@@ -78,13 +78,9 @@ func (h *QuestHandler) handleQuestStartInternal(user *store.UserState, questId i
 		log.Printf("[HandleQuestStart] QuestMenuPick quest=%d isBattleOnly=%v scene=%d cleared=%v",
 			questId, isBattleOnly, sceneId, isCleared)
 
-	case isCleared && isReplayFlow:
-		snapshotMainQuestIfNeeded(user)
-		user.MainQuest.CurrentQuestFlowType = int32(model.QuestFlowTypeReplayFlow)
-		user.MainQuest.ReplayFlowCurrentQuestSceneId = 0
-		user.MainQuest.ReplayFlowHeadQuestSceneId = 0
-		user.MainQuest.LatestVersion = nowMillis
-		log.Printf("[HandleQuestStart] MapPlay quest=%d isBattleOnly=%v", questId, isBattleOnly)
+	case isReplayFlow:
+		h.applyReplayStart(user, questId, isBattleOnly, nowMillis)
+		return
 	}
 
 	if isCleared {
@@ -129,6 +125,27 @@ func snapshotMainQuestIfNeeded(user *store.UserState) {
 	}
 }
 
+// Preserve CurrentQuestFlowType when HandleReplayFlowSceneProgress already
+// set it: replay-variant ids (30000+) aren't in RouteIdByQuestId.
+func (h *QuestHandler) applyReplayStart(user *store.UserState, questId int32, isBattleOnly bool, nowMillis int64) {
+	flowType := h.replayFlowTypeFromQuestId(user, questId)
+	if model.IsReplayQuestFlowType(user.MainQuest.CurrentQuestFlowType) {
+		flowType = model.QuestFlowType(user.MainQuest.CurrentQuestFlowType)
+	}
+	user.MainQuest.CurrentQuestFlowType = int32(flowType)
+	user.MainQuest.LatestVersion = nowMillis
+
+	questState := user.Quests[questId]
+	questState.QuestStateType = model.UserQuestStateTypeActive
+	questState.LatestStartDatetime = nowMillis
+	user.Quests[questId] = questState
+
+	log.Printf("[HandleQuestStart] replay quest=%d flowType=%s isBattleOnly=%v current=%d head=%d",
+		questId, flowType, isBattleOnly,
+		user.MainQuest.ReplayFlowCurrentQuestSceneId,
+		user.MainQuest.ReplayFlowHeadQuestSceneId)
+}
+
 func (h *QuestHandler) menuPickSceneId(questId int32, isBattleOnly bool) int32 {
 	if isBattleOnly {
 		if v, ok := h.BattleOnlyTargetSceneIdFor(questId); ok {
@@ -141,14 +158,24 @@ func (h *QuestHandler) menuPickSceneId(questId int32, isBattleOnly bool) int32 {
 	return 0
 }
 
-func (h *QuestHandler) applyQuestVictory(user *store.UserState, questId int32, outcome *FinishOutcome, nowMillis int64) {
+func (h *QuestHandler) applyQuestVictory(user *store.UserState, questId int32, outcome *FinishOutcome, nowMillis int64, wasReplay bool) {
 	questState := user.Quests[questId]
 	if !questState.IsRewardGranted {
-		h.applyQuestRewards(user, questId, nowMillis)
-		outcome.ChangedWeaponStoryIds = append(outcome.ChangedWeaponStoryIds,
-			h.grantWeaponStoryUnlocksForQuestScene(user, questId, model.QuestResultTypeHalfResult, nowMillis)...)
-		outcome.ChangedWeaponStoryIds = append(outcome.ChangedWeaponStoryIds,
-			h.grantWeaponStoryUnlocksForQuestScene(user, questId, model.QuestResultTypeFullResult, nowMillis)...)
+		h.applyExpAndGoldRewards(user, questId, nowMillis)
+		if !wasReplay {
+			h.applyFirstClearItemRewards(user, questId, nowMillis)
+			outcome.ChangedWeaponStoryIds = append(outcome.ChangedWeaponStoryIds,
+				h.grantWeaponStoryUnlocksForQuestScene(user, questId, model.QuestResultTypeHalfResult, nowMillis)...)
+			outcome.ChangedWeaponStoryIds = append(outcome.ChangedWeaponStoryIds,
+				h.grantWeaponStoryUnlocksForQuestScene(user, questId, model.QuestResultTypeFullResult, nowMillis)...)
+		}
+
+		for _, r := range outcome.MissionClearRewards {
+			h.applyRewardPossession(user, r.PossessionType, r.PossessionId, r.Count, nowMillis)
+		}
+		for _, r := range outcome.MissionClearCompleteRewards {
+			h.applyRewardPossession(user, r.PossessionType, r.PossessionId, r.Count, nowMillis)
+		}
 		questState.IsRewardGranted = true
 	}
 	for _, drop := range outcome.DropRewards {
@@ -197,13 +224,13 @@ func (h *QuestHandler) HandleQuestFinish(user *store.UserState, questId int32, i
 	h.initQuestState(user, questId)
 
 	outcome := h.evaluateFinishOutcome(user, questId)
-	wasReplay := user.MainQuest.CurrentQuestFlowType == int32(model.QuestFlowTypeReplayFlow)
+	wasReplay := model.IsReplayQuestFlowType(user.MainQuest.CurrentQuestFlowType)
 	wasMenuReplay := user.MainQuest.SavedContext.Active
 
 	if !isRetired {
-		h.applyQuestVictory(user, questId, &outcome, nowMillis)
+		h.applyQuestVictory(user, questId, &outcome, nowMillis, wasReplay)
 
-		if isMainQuestPlayable(quest) && !wasReplay && !wasMenuReplay {
+		if isMainQuestPlayable(quest) && !wasMenuReplay {
 			lastSceneId := h.getLastMainFlowSceneId(questId)
 			h.advanceMainFlowScene(user, questId, lastSceneId)
 		}
@@ -229,8 +256,12 @@ func (h *QuestHandler) HandleQuestFinish(user *store.UserState, questId int32, i
 
 	user.MainQuest.ProgressQuestSceneId = 0
 	user.MainQuest.ProgressHeadQuestSceneId = 0
-	user.MainQuest.ProgressQuestFlowType = 0
-	user.MainQuest.CurrentQuestFlowType = int32(model.QuestFlowTypeMainFlow)
+	if !wasReplay {
+		// Keep replay flow types on replay finish so the client's
+		// Story.ApplyNewestPlayingScene keeps _isReplayed=true (popup result UI).
+		user.MainQuest.ProgressQuestFlowType = 0
+		user.MainQuest.CurrentQuestFlowType = int32(model.QuestFlowTypeUnknown)
+	}
 
 	if wasMenuReplay {
 		ctx := user.MainQuest.SavedContext
@@ -246,12 +277,6 @@ func (h *QuestHandler) HandleQuestFinish(user *store.UserState, questId int32, i
 		log.Printf("[HandleQuestFinish] restored snapshot for quest %d (route=%d season=%d scene=%d head=%d cage=%v)",
 			questId, ctx.CurrentMainQuestRouteId, ctx.MainQuestSeasonId,
 			ctx.CurrentQuestSceneId, ctx.HeadQuestSceneId, ctx.PortalCageInProgress)
-	}
-
-	if wasReplay {
-		user.MainQuest.ReplayFlowCurrentQuestSceneId = 0
-		user.MainQuest.ReplayFlowHeadQuestSceneId = 0
-		log.Printf("[HandleQuestFinish] replay flow ended for quest %d", questId)
 	}
 
 	h.clearQuestMissions(user, questId, nowMillis)

@@ -537,7 +537,6 @@ func loadMapTables(db *sql.DB, uid int64, u *store.UserState) {
 			u.DokanConfirmed[id] = true
 		})
 
-	// Gifts
 	queryRows(db, `SELECT user_gift_uuid, is_received, possession_type, possession_id, count, grant_datetime,
 		description_gift_text_id, equipment_data, expiration_datetime, received_datetime
 		FROM user_gifts WHERE user_id=?`, uid, func(rows *sql.Rows) {
@@ -560,7 +559,6 @@ func loadMapTables(db *sql.DB, uid int64, u *store.UserState) {
 		}
 	})
 
-	// Gacha converted medals
 	queryRows(db, `SELECT consumable_item_id, count FROM user_gacha_converted_medals WHERE user_id=? ORDER BY ordinal`, uid,
 		func(rows *sql.Rows) {
 			var v store.ConsumableItemState
@@ -568,7 +566,6 @@ func loadMapTables(db *sql.DB, uid int64, u *store.UserState) {
 			u.Gacha.ConvertedGachaMedal.ConvertedMedalPossession = append(u.Gacha.ConvertedGachaMedal.ConvertedMedalPossession, v)
 		})
 
-	// Gacha banners
 	queryRows(db, `SELECT gacha_id, medal_count, step_number, loop_count, draw_count, box_number
 		FROM user_gacha_banners WHERE user_id=?`, uid, func(rows *sql.Rows) {
 		var v store.GachaBannerState
@@ -586,7 +583,6 @@ func loadMapTables(db *sql.DB, uid int64, u *store.UserState) {
 			}
 		})
 
-	// Character boards
 	queryRows(db, `SELECT character_board_id, panel_release_bit1, panel_release_bit2, panel_release_bit3,
 		panel_release_bit4, latest_version FROM user_character_boards WHERE user_id=?`, uid,
 		func(rows *sql.Rows) {
@@ -642,7 +638,6 @@ func loadMapTables(db *sql.DB, uid int64, u *store.UserState) {
 			u.ShopReplaceableLineup[v.SlotNumber] = v
 		})
 
-	// Gimmick tables
 	queryRows(db, `SELECT gimmick_sequence_schedule_id, gimmick_sequence_id, gimmick_id,
 		is_gimmick_cleared, start_datetime, latest_version FROM user_gimmick_progress WHERE user_id=?`, uid,
 		func(rows *sql.Rows) {
@@ -685,7 +680,6 @@ func loadMapTables(db *sql.DB, uid int64, u *store.UserState) {
 			u.Gimmick.Unlocks[v.Key] = v
 		})
 
-	// Big hunt maps
 	queryRows(db, `SELECT big_hunt_boss_id, max_score, max_score_update_datetime, latest_version
 		FROM user_big_hunt_max_scores WHERE user_id=?`, uid, func(rows *sql.Rows) {
 		var id int32
