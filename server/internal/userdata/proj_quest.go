@@ -3,6 +3,7 @@ package userdata
 import (
 	"sort"
 
+	"lunar-tear/server/internal/model"
 	"lunar-tear/server/internal/store"
 	"lunar-tear/server/internal/utils"
 )
@@ -13,13 +14,30 @@ func sortedQuestRecords(user store.UserState) []map[string]any {
 		ids = append(ids, int(id))
 	}
 	sort.Ints(ids)
+
+	var replayQuestId int32
+	if user.MainQuest.SavedContext.Active && questHandler != nil {
+		if scene, ok := questHandler.SceneById[user.MainQuest.ProgressQuestSceneId]; ok {
+			replayQuestId = scene.QuestId
+		}
+	}
+
 	records := make([]map[string]any, 0, len(ids))
 	for _, id := range ids {
 		row := user.Quests[int32(id)]
+		stateType := row.QuestStateType
+		if replayQuestId != 0 {
+			switch {
+			case int32(id) == replayQuestId:
+				stateType = model.UserQuestStateTypeActive
+			case stateType == model.UserQuestStateTypeActive:
+				stateType = model.UserQuestStateTypeCleared
+			}
+		}
 		records = append(records, map[string]any{
 			"userId":              user.UserId,
 			"questId":             row.QuestId,
-			"questStateType":      row.QuestStateType,
+			"questStateType":      stateType,
 			"isBattleOnly":        row.IsBattleOnly,
 			"latestStartDatetime": row.LatestStartDatetime,
 			"clearCount":          row.ClearCount,

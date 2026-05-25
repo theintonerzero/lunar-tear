@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	pb "lunar-tear/server/gen/proto"
+	"lunar-tear/server/internal/campaign"
 	"lunar-tear/server/internal/gametime"
 	"lunar-tear/server/internal/gameutil"
 	"lunar-tear/server/internal/masterdata"
@@ -50,6 +51,12 @@ func (s *CostumeServiceServer) Enhance(ctx context.Context, req *pb.EnhanceReque
 			return
 		}
 
+		expBonus := cat.Campaign.CostumeExpBonus(campaign.CostumeTarget{
+			CostumeId:          costume.CostumeId,
+			CharacterId:        cm.CharacterId,
+			SkillfulWeaponType: cm.SkillfulWeaponType,
+		}, campaign.Filter{NowMillis: nowMillis, UserStatus: campaign.TargetUserStatusAll})
+
 		totalExp := int32(0)
 		totalMaterialCount := int32(0)
 		for materialId, count := range req.Materials {
@@ -71,7 +78,7 @@ func (s *CostumeServiceServer) Enhance(ctx context.Context, req *pb.EnhanceReque
 			if mat.WeaponType != 0 && mat.WeaponType == cm.SkillfulWeaponType {
 				expPerUnit = expPerUnit * config.MaterialSameWeaponExpCoefficientPermil / 1000
 			}
-			totalExp += expPerUnit * count
+			totalExp += expBonus.Apply(expPerUnit * count)
 		}
 
 		if costFunc, ok := catalog.EnhanceCostByRarity[cm.RarityType]; ok && totalMaterialCount > 0 {

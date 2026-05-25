@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 
+	"lunar-tear/server/internal/campaign"
 	"lunar-tear/server/internal/gameutil"
 	"lunar-tear/server/internal/masterdata"
 	"lunar-tear/server/internal/model"
@@ -40,7 +41,7 @@ func (h *QuestHandler) firstClearRewardGroupId(user *store.UserState, questDef m
 	return rewardGroupId
 }
 
-func (h *QuestHandler) evaluateFinishOutcome(user *store.UserState, questId int32) FinishOutcome {
+func (h *QuestHandler) evaluateFinishOutcome(user *store.UserState, questId int32, target campaign.QuestTarget, nowMillis int64) FinishOutcome {
 	outcome := FinishOutcome{}
 	questState, ok := user.Quests[questId]
 	if !ok {
@@ -123,25 +124,28 @@ func (h *QuestHandler) evaluateFinishOutcome(user *store.UserState, questId int3
 		}
 	}
 
-	outcome.DropRewards = h.computeDropRewards(questDef)
+	outcome.DropRewards = h.computeDropRewards(questDef, target, nowMillis)
 	return outcome
 }
 
-func (h *QuestHandler) computeDropRewards(questDef masterdata.EntityMQuest) []RewardGrant {
-	if questDef.QuestPickupRewardGroupId == 0 {
-		return nil
-	}
+func (h *QuestHandler) computeDropRewards(questDef masterdata.EntityMQuest, target campaign.QuestTarget, nowMillis int64) []RewardGrant {
 	var drops []RewardGrant
-	for _, dropId := range h.PickupRewardIdsByGroupId[questDef.QuestPickupRewardGroupId] {
-		if bdr, ok := h.BattleDropRewardById[dropId]; ok {
-			drops = append(drops, RewardGrant{
-				PossessionType: model.PossessionType(bdr.PossessionType),
-				PossessionId:   bdr.PossessionId,
-				Count:          bdr.Count,
-			})
+	var dropRate campaign.DropRateMul
+	if h.Campaigns != nil {
+		dropRate = h.Campaigns.QuestDropRate(target, h.campaignFilter(nowMillis))
+	}
+	if questDef.QuestPickupRewardGroupId != 0 {
+		for _, dropId := range h.PickupRewardIdsByGroupId[questDef.QuestPickupRewardGroupId] {
+			if bdr, ok := h.BattleDropRewardById[dropId]; ok {
+				drops = append(drops, RewardGrant{
+					PossessionType: model.PossessionType(bdr.PossessionType),
+					PossessionId:   bdr.PossessionId,
+					Count:          dropRate.Apply(bdr.Count),
+				})
+			}
 		}
 	}
-	return drops
+	return h.appendBonusDrops(drops, target, nowMillis)
 }
 
 func (h *QuestHandler) applyExpRewards(user *store.UserState, questId int32, nowMillis int64) {

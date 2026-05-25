@@ -7,8 +7,10 @@ import (
 	"math/rand"
 
 	pb "lunar-tear/server/gen/proto"
+	"lunar-tear/server/internal/campaign"
 	"lunar-tear/server/internal/gametime"
 	"lunar-tear/server/internal/masterdata"
+	"lunar-tear/server/internal/model"
 	"lunar-tear/server/internal/runtime"
 	"lunar-tear/server/internal/store"
 )
@@ -180,17 +182,23 @@ func (s *PartsServiceServer) Enhance(ctx context.Context, req *pb.PartsEnhanceRe
 				successRate = r
 			}
 		}
+		baseRate := successRate
+		successRate = cat.Campaign.PartsRateBonus(campaign.PartsTarget{
+			PartsId:      part.PartsId,
+			PartsGroupId: partDef.PartsGroupId,
+			Rarity:       model.RarityType(partDef.RarityType),
+		}, campaign.Filter{NowMillis: nowMillis, UserStatus: campaign.TargetUserStatusAll}).Apply(baseRate)
 
 		if rand.Intn(1000) < int(successRate) {
 			part.Level++
 			isSuccess = true
-			log.Printf("[PartsService] Enhance: SUCCESS partsId=%d level %d -> %d (rate=%d‰, cost=%d gold)",
-				part.PartsId, part.Level-1, part.Level, successRate, goldCost)
+			log.Printf("[PartsService] Enhance: SUCCESS partsId=%d level %d -> %d (rate=%d‰ base=%d‰, cost=%d gold)",
+				part.PartsId, part.Level-1, part.Level, successRate, baseRate, goldCost)
 
 			grantPartsSubStatuses(catalog, user, req.UserPartsUuid, part, partDef, nowMillis)
 		} else {
-			log.Printf("[PartsService] Enhance: FAIL partsId=%d stays level %d (rate=%d‰, cost=%d gold)",
-				part.PartsId, part.Level, successRate, goldCost)
+			log.Printf("[PartsService] Enhance: FAIL partsId=%d stays level %d (rate=%d‰ base=%d‰, cost=%d gold)",
+				part.PartsId, part.Level, successRate, baseRate, goldCost)
 		}
 
 		part.LatestVersion = nowMillis

@@ -37,6 +37,8 @@ type QuestCatalog struct {
 	RoutesBySeason                     map[int32][]int32
 	RouteCompletionQuestId             map[int32]int32
 	BattleOnlyTargetSceneByQuestId     map[int32]int32
+	MainQuestChapterIdByQuestId        map[int32]int32
+	EventQuestTypeByChapterId          map[int32]int32
 
 	UserExpThresholds       []int32
 	CharacterExpThresholds  []int32
@@ -382,10 +384,21 @@ func LoadQuestCatalog(partsCatalog *PartsCatalog) (*QuestCatalog, error) {
 		chapterBySequenceId[chapter.MainQuestSequenceGroupId] = chapter
 	}
 	routeIdByQuestId := make(map[int32]int32)
+	mainQuestChapterIdByQuestId := make(map[int32]int32)
 	for _, sequence := range sequences {
 		if chapter, ok := chapterBySequenceId[sequence.MainQuestSequenceId]; ok {
 			routeIdByQuestId[sequence.QuestId] = chapter.MainQuestRouteId
+			mainQuestChapterIdByQuestId[sequence.QuestId] = chapter.MainQuestChapterId
 		}
+	}
+
+	eventChapters, err := utils.ReadTable[EntityMEventQuestChapter]("m_event_quest_chapter")
+	if err != nil {
+		return nil, fmt.Errorf("load event quest chapter table: %w", err)
+	}
+	eventQuestTypeByChapterId := make(map[int32]int32, len(eventChapters))
+	for _, ec := range eventChapters {
+		eventQuestTypeByChapterId[ec.EventQuestChapterId] = ec.EventQuestType
 	}
 
 	sortedChapters := make([]EntityMMainQuestChapter, len(chapters))
@@ -589,6 +602,8 @@ func LoadQuestCatalog(partsCatalog *PartsCatalog) (*QuestCatalog, error) {
 		RoutesBySeason:                     routesBySeason,
 		RouteCompletionQuestId:             routeCompletionQuestId,
 		BattleOnlyTargetSceneByQuestId:     battleOnlyTargetSceneByQuestId,
+		MainQuestChapterIdByQuestId:        mainQuestChapterIdByQuestId,
+		EventQuestTypeByChapterId:          eventQuestTypeByChapterId,
 
 		UserExpThresholds:       BuildExpThresholds(paramMapRows, 1),
 		CharacterExpThresholds:  BuildExpThresholds(paramMapRows, 31),

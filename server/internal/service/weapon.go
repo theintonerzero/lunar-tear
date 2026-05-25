@@ -6,6 +6,7 @@ import (
 	"log"
 
 	pb "lunar-tear/server/gen/proto"
+	"lunar-tear/server/internal/campaign"
 	"lunar-tear/server/internal/gametime"
 	"lunar-tear/server/internal/gameutil"
 	"lunar-tear/server/internal/masterdata"
@@ -91,6 +92,12 @@ func (s *WeaponServiceServer) EnhanceByMaterial(ctx context.Context, req *pb.Enh
 			return
 		}
 
+		expBonus := cat.Campaign.WeaponExpBonus(campaign.WeaponTarget{
+			WeaponId:      weapon.WeaponId,
+			WeaponType:    wm.WeaponType,
+			AttributeType: wm.AttributeType,
+		}, campaign.Filter{NowMillis: nowMillis, UserStatus: campaign.TargetUserStatusAll})
+
 		totalExp := int32(0)
 		totalMaterialCount := int32(0)
 		for materialId, count := range req.Materials {
@@ -112,7 +119,7 @@ func (s *WeaponServiceServer) EnhanceByMaterial(ctx context.Context, req *pb.Enh
 			if mat.WeaponType != 0 && mat.WeaponType == wm.WeaponType {
 				expPerUnit = expPerUnit * config.MaterialSameWeaponExpCoefficientPermil / 1000
 			}
-			totalExp += expPerUnit * count
+			totalExp += expBonus.Apply(expPerUnit * count)
 		}
 
 		if costFunc, ok := catalog.GoldCostByEnhanceId[wm.WeaponSpecificEnhanceId]; ok && totalMaterialCount > 0 {
@@ -702,6 +709,12 @@ func (s *WeaponServiceServer) EnhanceByWeapon(ctx context.Context, req *pb.Enhan
 			return
 		}
 
+		expBonus := cat.Campaign.WeaponExpBonus(campaign.WeaponTarget{
+			WeaponId:      weapon.WeaponId,
+			WeaponType:    wm.WeaponType,
+			AttributeType: wm.AttributeType,
+		}, campaign.Filter{NowMillis: nowMillis, UserStatus: campaign.TargetUserStatusAll})
+
 		totalExp := int32(0)
 		consumedCount := int32(0)
 		for _, uuid := range req.MaterialUserWeaponUuids {
@@ -722,7 +735,7 @@ func (s *WeaponServiceServer) EnhanceByWeapon(ctx context.Context, req *pb.Enhan
 			if matMaster.WeaponType != 0 && matMaster.WeaponType == wm.WeaponType {
 				baseExp = baseExp * config.MaterialSameWeaponExpCoefficientPermil / 1000
 			}
-			totalExp += baseExp
+			totalExp += expBonus.Apply(baseExp)
 
 			if medals, ok := catalog.MedalsByWeaponId[matWeapon.WeaponId]; ok {
 				for itemId, count := range medals {

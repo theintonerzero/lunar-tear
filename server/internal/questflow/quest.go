@@ -61,7 +61,8 @@ func (h *QuestHandler) handleQuestStartInternal(user *store.UserState, questId i
 
 	h.initQuestState(user, questId)
 	if quest.Stamina > 0 {
-		store.ConsumeStamina(user, quest.Stamina, h.MaxStaminaByLevel[user.Status.Level]*1000, nowMillis)
+		stamina := h.staminaWithCampaign(quest.Stamina, h.targetForMain(questId), nowMillis)
+		store.ConsumeStamina(user, stamina, h.MaxStaminaByLevel[user.Status.Level]*1000, nowMillis)
 	}
 
 	questState := user.Quests[questId]
@@ -259,7 +260,7 @@ func (h *QuestHandler) HandleQuestFinish(user *store.UserState, questId int32, i
 
 	h.initQuestState(user, questId)
 
-	outcome := h.evaluateFinishOutcome(user, questId)
+	outcome := h.evaluateFinishOutcome(user, questId, h.targetForMain(questId), nowMillis)
 	wasReplay := model.IsReplayQuestFlowType(user.MainQuest.CurrentQuestFlowType)
 	wasMenuReplay := user.MainQuest.SavedContext.Active
 
@@ -277,8 +278,9 @@ func (h *QuestHandler) HandleQuestFinish(user *store.UserState, questId int32, i
 		}
 	}
 
-	if isRetired && !isAnnihilated && quest.Stamina > 1 {
-		refund := quest.Stamina - 1
+	consumed := h.staminaWithCampaign(quest.Stamina, h.targetForMain(questId), nowMillis)
+	if isRetired && !isAnnihilated && consumed > 1 {
+		refund := consumed - 1
 		maxMillis := h.MaxStaminaByLevel[user.Status.Level] * 1000
 		store.RecoverStamina(user, refund*1000, maxMillis, nowMillis)
 	}
@@ -322,18 +324,19 @@ func (h *QuestHandler) HandleQuestSkip(user *store.UserState, questId, skipCount
 		panic(fmt.Sprintf("unknown questId=%d for HandleQuestSkip", questId))
 	}
 
+	target := h.targetForMain(questId)
 	maxMillis := h.MaxStaminaByLevel[user.Status.Level] * 1000
-	store.ConsumeStamina(user, skipCount, maxMillis, nowMillis)
+	perSkipStamina := h.staminaWithCampaign(questDef.Stamina, target, nowMillis)
+	store.ConsumeStamina(user, perSkipStamina*skipCount, maxMillis, nowMillis)
 
 	skipTicketId := h.Config.ConsumableItemIdForQuestSkipTicket
 	user.ConsumableItems[skipTicketId] -= skipCount
 	if user.ConsumableItems[skipTicketId] < 0 {
 		user.ConsumableItems[skipTicketId] = 0
 	}
-
 	var allDrops []RewardGrant
 	for range skipCount {
-		drops := h.computeDropRewards(questDef)
+		drops := h.computeDropRewards(questDef, target, nowMillis)
 		for _, drop := range drops {
 			h.applyRewardPossession(user, drop.PossessionType, drop.PossessionId, drop.Count, nowMillis)
 		}

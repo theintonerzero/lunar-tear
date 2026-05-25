@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 
+	"lunar-tear/server/internal/campaign"
 	"lunar-tear/server/internal/gacha"
 	"lunar-tear/server/internal/masterdata"
 	"lunar-tear/server/internal/masterdata/memorydb"
@@ -35,7 +36,12 @@ func buildCatalogs() (*Catalogs, error) {
 		return nil, fmt.Errorf("load quest catalog: %w", err)
 	}
 	sideStoryCatalog := masterdata.LoadSideStoryCatalog()
-	questHandler := questflow.NewQuestHandler(questCatalog, gameConfig, sideStoryCatalog)
+	campaignCatalog, err := campaign.Load()
+	if err != nil {
+		return nil, fmt.Errorf("load campaign catalog: %w", err)
+	}
+	log.Printf("campaign catalog loaded: %d enhance, %d quest", campaignCatalog.EnhanceCount(), campaignCatalog.QuestCount())
+	questHandler := questflow.NewQuestHandler(questCatalog, gameConfig, sideStoryCatalog, campaignCatalog)
 	userdata.SetQuestHandler(questHandler)
 
 	gachaEntries, medalInfo, err := masterdata.LoadGachaCatalog()
@@ -172,6 +178,7 @@ func buildCatalogs() (*Catalogs, error) {
 		BigHunt:           bigHuntCatalog,
 		Tower:             towerCatalog,
 		Labyrinth:         labyrinthCatalog,
+		Campaign:          campaignCatalog,
 		QuestHandler:      questHandler,
 		GachaHandler:      gachaHandler,
 	}, nil

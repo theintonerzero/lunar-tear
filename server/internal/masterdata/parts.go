@@ -158,5 +158,9 @@ func buildPartsStatusMain() (map[int32]PartsStatusMainDef, map[int32][]int32) {
 			id++
 		}
 	}
+	// Newer parts groups (PartsGroupId 401-490) use PartsStatusSubLotteryGroupId
+	// 11/12 for rarities 10/20 instead of 1/2. Same stat pools — alias them.
+	pool[11] = pool[1]
+	pool[12] = pool[2]
 	return defs, pool
 }

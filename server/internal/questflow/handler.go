@@ -1,6 +1,9 @@
 package questflow
 
 import (
+	"sort"
+
+	"lunar-tear/server/internal/campaign"
 	"lunar-tear/server/internal/masterdata"
 	"lunar-tear/server/internal/model"
 	"lunar-tear/server/internal/store"
@@ -28,9 +31,10 @@ type QuestHandler struct {
 	Config                         *masterdata.GameConfig
 	Granter                        *store.PossessionGranter
 	SideStoryChapterByEventQuestId map[int32]int32
+	Campaigns                      *campaign.Catalog
 }
 
-func NewQuestHandler(catalog *masterdata.QuestCatalog, config *masterdata.GameConfig, sideStory *masterdata.SideStoryCatalog) *QuestHandler {
+func NewQuestHandler(catalog *masterdata.QuestCatalog, config *masterdata.GameConfig, sideStory *masterdata.SideStoryCatalog, campaigns *campaign.Catalog) *QuestHandler {
 	granter := BuildGranter(catalog)
 	var sideStoryChapters map[int32]int32
 	if sideStory != nil {
@@ -41,6 +45,7 @@ func NewQuestHandler(catalog *masterdata.QuestCatalog, config *masterdata.GameCo
 		Config:                         config,
 		Granter:                        granter,
 		SideStoryChapterByEventQuestId: sideStoryChapters,
+		Campaigns:                      campaigns,
 	}
 }
 
@@ -70,12 +75,40 @@ func BuildGranter(catalog *masterdata.QuestCatalog) *store.PossessionGranter {
 		releaseConditions[groupId] = conds
 	}
 	partsById := make(map[int32]store.PartsRef, len(catalog.PartsById))
+	partsVariants := make(map[int32]map[int32][]int32)
 	for id, p := range catalog.PartsById {
 		partsById[id] = store.PartsRef{
 			PartsGroupId:                  p.PartsGroupId,
+			RarityType:                    p.RarityType,
+			PartsInitialLotteryId:         p.PartsInitialLotteryId,
 			PartsStatusMainLotteryGroupId: p.PartsStatusMainLotteryGroupId,
+			PartsStatusSubLotteryGroupId:  p.PartsStatusSubLotteryGroupId,
+		}
+		if partsVariants[p.PartsGroupId] == nil {
+			partsVariants[p.PartsGroupId] = map[int32][]int32{}
+		}
+		partsVariants[p.PartsGroupId][p.RarityType] = append(partsVariants[p.PartsGroupId][p.RarityType], p.PartsId)
+	}
+	for _, byRarity := range partsVariants {
+		for _, ids := range byRarity {
+			sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 		}
 	}
+
+	partsSubDefs := make(map[int32]store.PartsStatusSubDef, len(catalog.PartsStatusMainById))
+	for id, d := range catalog.PartsStatusMainById {
+		var fn func(int32) int32
+		if f, ok := catalog.FuncResolver.Resolve(d.StatusNumericalFunctionId); ok {
+			fn = f.Evaluate
+		}
+		partsSubDefs[id] = store.PartsStatusSubDef{
+			StatusKindType:           d.StatusKindType,
+			StatusCalculationType:    d.StatusCalculationType,
+			StatusChangeInitialValue: d.StatusChangeInitialValue,
+			StatusFunc:               fn,
+		}
+	}
+
 	return &store.PossessionGranter{
 		CostumeById:                          costumeById,
 		WeaponById:                           weaponById,
@@ -84,5 +117,8 @@ func BuildGranter(catalog *masterdata.QuestCatalog) *store.PossessionGranter {
 		ReleaseConditions:                    releaseConditions,
 		PartsById:                            partsById,
 		DefaultPartsStatusMainByLotteryGroup: catalog.DefaultPartsStatusMainByLotteryGroup,
+		PartsVariantsByGroupRarity:           partsVariants,
+		PartsSubStatusPool:                   catalog.SubStatusPool,
+		PartsSubStatusDefs:                   partsSubDefs,
 	}
 }

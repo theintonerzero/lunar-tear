@@ -3,6 +3,7 @@ package store
 import (
 	"fmt"
 	"log"
+	"math/rand"
 	"sort"
 
 	"github.com/google/uuid"
@@ -102,7 +103,19 @@ type WeaponStoryReleaseCond struct {
 
 type PartsRef struct {
 	PartsGroupId                  int32
+	RarityType                    int32
+	PartsInitialLotteryId         int32
 	PartsStatusMainLotteryGroupId int32
+	PartsStatusSubLotteryGroupId  int32
+}
+
+// PartsStatusSubDef carries the per-lottery-id sub-status shape needed at
+// grant time. Held here so the store package does not import masterdata.
+type PartsStatusSubDef struct {
+	StatusKindType           int32
+	StatusCalculationType    int32
+	StatusChangeInitialValue int32
+	StatusFunc               func(level int32) int32
 }
 
 type PossessionGranter struct {
@@ -114,6 +127,9 @@ type PossessionGranter struct {
 
 	PartsById                            map[int32]PartsRef
 	DefaultPartsStatusMainByLotteryGroup map[int32]int32
+	PartsVariantsByGroupRarity           map[int32]map[int32][]int32
+	PartsSubStatusPool                   map[int32][]int32
+	PartsSubStatusDefs                   map[int32]PartsStatusSubDef
 
 	LastChangedStoryWeaponIds []int32
 }
@@ -184,26 +200,73 @@ func (g *PossessionGranter) GrantCompanion(user *UserState, companionId int32, n
 	}
 }
 
-func (g *PossessionGranter) GrantParts(user *UserState, partsId int32, nowMillis int64) {
-	var mainStatId int32
-	if ref, ok := g.PartsById[partsId]; ok {
-		mainStatId = g.DefaultPartsStatusMainByLotteryGroup[ref.PartsStatusMainLotteryGroupId]
-		if _, exists := user.PartsGroupNotes[ref.PartsGroupId]; !exists {
-			user.PartsGroupNotes[ref.PartsGroupId] = PartsGroupNoteState{
-				PartsGroupId:             ref.PartsGroupId,
-				FirstAcquisitionDatetime: nowMillis,
-				LatestVersion:            nowMillis,
-			}
+func (g *PossessionGranter) GrantParts(user *UserState, requestedPartsId int32, nowMillis int64) {
+	ref, refOk := g.PartsById[requestedPartsId]
+	if !refOk {
+		key := uuid.New().String()
+		user.Parts[key] = PartsState{
+			UserPartsUuid:       key,
+			PartsId:             requestedPartsId,
+			Level:               1,
+			AcquisitionDatetime: nowMillis,
+		}
+		log.Printf("[GrantParts] unknown partsId=%d, granted as-is with no variant roll", requestedPartsId)
+		return
+	}
+
+	chosenPartsId := requestedPartsId
+	chosenRef := ref
+	if variants := g.PartsVariantsByGroupRarity[ref.PartsGroupId][ref.RarityType]; len(variants) == 5 {
+		chosenPartsId = variants[rand.Intn(len(variants))]
+		chosenRef = g.PartsById[chosenPartsId]
+	} else {
+		log.Printf("[GrantParts] no 5-variant set for group=%d rarity=%d (have %d), granting requested=%d", ref.PartsGroupId, ref.RarityType, len(variants), requestedPartsId)
+	}
+
+	mainStatId := g.DefaultPartsStatusMainByLotteryGroup[chosenRef.PartsStatusMainLotteryGroupId]
+	if _, exists := user.PartsGroupNotes[chosenRef.PartsGroupId]; !exists {
+		user.PartsGroupNotes[chosenRef.PartsGroupId] = PartsGroupNoteState{
+			PartsGroupId:             chosenRef.PartsGroupId,
+			FirstAcquisitionDatetime: nowMillis,
+			LatestVersion:            nowMillis,
 		}
 	}
 	key := uuid.New().String()
 	user.Parts[key] = PartsState{
 		UserPartsUuid:       key,
-		PartsId:             partsId,
+		PartsId:             chosenPartsId,
 		Level:               1,
 		PartsStatusMainId:   mainStatId,
 		AcquisitionDatetime: nowMillis,
 	}
+
+	initialCount := chosenRef.PartsInitialLotteryId
+	pool := g.PartsSubStatusPool[chosenRef.PartsStatusSubLotteryGroupId]
+	if initialCount > 1 && len(pool) > 0 {
+		for i := int32(0); i < initialCount-1; i++ {
+			pickId := pool[rand.Intn(len(pool))]
+			def, ok := g.PartsSubStatusDefs[pickId]
+			if !ok {
+				continue
+			}
+			val := def.StatusChangeInitialValue
+			if def.StatusFunc != nil {
+				val = def.StatusFunc(1)
+			}
+			user.PartsStatusSubs[PartsStatusSubKey{UserPartsUuid: key, StatusIndex: i + 1}] = PartsStatusSubState{
+				UserPartsUuid:           key,
+				StatusIndex:             i + 1,
+				PartsStatusSubLotteryId: pickId,
+				Level:                   1,
+				StatusKindType:          def.StatusKindType,
+				StatusCalculationType:   def.StatusCalculationType,
+				StatusChangeValue:       val,
+				LatestVersion:           nowMillis,
+			}
+		}
+	}
+
+	log.Printf("[GrantParts] requested=%d chosen=%d variant=%d group=%d rarity=%d preUnlockedSubs=%d", requestedPartsId, chosenPartsId, initialCount, chosenRef.PartsGroupId, chosenRef.RarityType, initialCount-1)
 }
 
 func (g *PossessionGranter) GrantWeapon(user *UserState, weaponId int32, nowMillis int64) {
