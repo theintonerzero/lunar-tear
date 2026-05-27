@@ -82,7 +82,7 @@ func loadEnhanceRows() ([]enhanceRow, error) {
 		}
 		rows = append(rows, enhanceRow{
 			effectType:  EnhanceCampaignEffectType(c.EnhanceCampaignEffectType),
-			effectValue: c.EnhanceCampaignEffectValue,
+			effectValue: c.EnhanceCampaignEffectValue / 10,
 			targets:     grp,
 			startMillis: c.StartDatetime,
 			endMillis:   c.EndDatetime,

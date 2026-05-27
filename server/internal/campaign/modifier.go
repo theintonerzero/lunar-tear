@@ -10,7 +10,7 @@ func (b RateBonus) Apply(basePermil int32) int32 {
 	if b.override > 0 {
 		base = b.override
 	}
-	return clampPermil(base + b.bonusPermil)
+	return clampPermil(int32(int64(base) + int64(b.bonusPermil)))
 }
 
 type ExpBonus struct {
@@ -18,7 +18,7 @@ type ExpBonus struct {
 }
 
 func (b ExpBonus) Apply(base int32) int32 {
-	return base * (1000 + b.bonusPermil) / 1000
+	return int32(int64(base) * int64(1000+b.bonusPermil) / 1000)
 }
 
 type StaminaMul struct {
@@ -29,7 +29,7 @@ func (m StaminaMul) Apply(base int32) int32 {
 	if m.permil == 1000 {
 		return base
 	}
-	return base * m.permil / 1000
+	return int32(int64(base) * int64(m.permil) / 1000)
 }
 
 type DropRateMul struct {
@@ -37,7 +37,7 @@ type DropRateMul struct {
 }
 
 func (m DropRateMul) Apply(base int32) int32 {
-	return (base*(1000+m.bonusPermil) + 999) / 1000
+	return int32((int64(base)*int64(1000+m.bonusPermil) + 999) / 1000)
 }
 
 type BonusDrop struct {
